@@ -1,0 +1,32 @@
+# --- Secrets ---
+.env
+.env.local
+backend/.env
+frontend/.env
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- Node ---
+node_modules/
+dist/
+frontend/dist/
+
+# --- Runtime / données locales ---
+# (recréé automatiquement par l'app au démarrage, cf. routers/documents.py)
+backend/uploads/
+
+# --- IDE / OS ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Claude Code (config locale, propre à la machine) ---
+.claude/settings.local.json

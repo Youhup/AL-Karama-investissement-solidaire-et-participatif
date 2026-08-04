@@ -1,0 +1,39 @@
+# Overrides de développement, chargés automatiquement par `docker compose up`
+# en plus de docker-compose.yml (pas besoin de -f).
+#
+# Objectif : modifier le code sans reconstruire les images.
+#   - api / worker : le dossier backend/ est monté en volume, uvicorn tourne
+#     avec --reload (watchfiles, fourni par uvicorn[standard]).
+#   - frontend : au lieu de servir le build statique via nginx, on lance le
+#     serveur de dev Vite (HMR) dans le stage "builder" de l'image.
+#
+# Usage : docker compose up --build   (une seule fois, pour installer les
+# dépendances), puis simplement `docker compose up` ensuite.
+
+services:
+  api:
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+    # Celery ne recharge pas seul : après une modif de code, redémarrez ce
+    # service avec `docker compose restart worker` (pas de rebuild requis).
+
+  # Le fichier de base publie déjà 5173:80 ; Compose CONCATÈNE les listes
+  # `ports` entre docker-compose.yml et cet override (il ne les remplace
+  # pas). On fait donc tourner Vite sur le port 80 dans le conteneur pour
+  # réutiliser ce mapping, plutôt que d'en ajouter un second en conflit.
+  frontend:
+    build:
+      target: builder
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 80

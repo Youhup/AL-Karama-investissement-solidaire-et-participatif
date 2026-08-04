@@ -1,0 +1,125 @@
+# Orchestration complète : Postgres + Redis + API FastAPI + worker Celery + frontend nginx.
+#
+# Usage :
+#   cp .env.example .env         # renseigner au minimum GROQ_API_KEY et SECRET_KEY
+#   docker compose up --build    # démarre tout et applique les migrations
+#
+# Comptes de démonstration (créés par le service `seed`, cf. .env) :
+#   admin@demo.ma / porteur@demo.ma / investisseur@demo.ma — mot de passe demo1234
+
+services:
+  postgres:
+    # Image officielle Postgres 16 + extension pgvector préinstallée
+    # (nécessaire pour le RAG du chat, cf. app/services/retrieval_service.py).
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: solidaire
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-solidaire}
+      POSTGRES_DB: solidaire_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U solidaire -d solidaire_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Applique les migrations Alembic puis se termine. Bloque le démarrage
+  # de l'API tant que le schéma n'est pas à jour.
+  migrate:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://solidaire:${POSTGRES_PASSWORD:-solidaire}@postgres:5432/solidaire_db
+      SECRET_KEY: ${SECRET_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      REDIS_URL: redis://redis:6379/0
+    command: alembic upgrade head
+    restart: "no"
+
+  # Peuple la base avec les comptes/dossiers de démonstration (une fois).
+  # Commenter en production.
+  seed:
+    build: ./backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://solidaire:${POSTGRES_PASSWORD:-solidaire}@postgres:5432/solidaire_db
+      SECRET_KEY: ${SECRET_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      REDIS_URL: redis://redis:6379/0
+    command: python seed_demo.py
+    restart: "no"
+
+  api:
+    build: ./backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://solidaire:${POSTGRES_PASSWORD:-solidaire}@postgres:5432/solidaire_db
+      SECRET_KEY: ${SECRET_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_CHAT_MODEL: ${GROQ_CHAT_MODEL:-openai/gpt-oss-120b}
+      GROQ_AGENT_MODEL: ${GROQ_AGENT_MODEL:-openai/gpt-oss-120b}
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /app/uploads
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/uploads
+
+  # Worker Celery : exécute l'analyse IA et l'OCR en tâche de fond.
+  # Partage le volume uploads/ pour que l'OCR accède aux fichiers téléversés.
+  worker:
+    build: ./backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://solidaire:${POSTGRES_PASSWORD:-solidaire}@postgres:5432/solidaire_db
+      SECRET_KEY: ${SECRET_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_CHAT_MODEL: ${GROQ_CHAT_MODEL:-openai/gpt-oss-120b}
+      GROQ_AGENT_MODEL: ${GROQ_AGENT_MODEL:-openai/gpt-oss-120b}
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
+    command: celery -A app.core.celery_app.celery_app worker --loglevel=info
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # L'API tourne dans le réseau docker (nom de service = api), mais le
+        # navigateur, lui, appelle depuis la machine hôte : on passe donc par
+        # localhost:8000, exposé par le service api.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+
+volumes:
+  pg_data:
+  uploads:
