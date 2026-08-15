@@ -63,6 +63,13 @@ services:
       SECRET_KEY: ${SECRET_KEY}
       GROQ_API_KEY: ${GROQ_API_KEY}
       REDIS_URL: redis://redis:6379/0
+      # Le protocole de téléchargement "Xet" de HuggingFace échoue de façon
+      # intermittente sur certains réseaux (I/O error, connexions qui
+      # traînent) : on force le téléchargement HTTP classique, plus lent
+      # mais fiable, pour le modèle d'embeddings (cf. embedding_service.py).
+      HF_HUB_DISABLE_XET: "1"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
     command: python seed_demo.py
     restart: "no"
 
@@ -81,10 +88,12 @@ services:
       GROQ_AGENT_MODEL: ${GROQ_AGENT_MODEL:-openai/gpt-oss-120b}
       REDIS_URL: redis://redis:6379/0
       UPLOAD_DIR: /app/uploads
+      HF_HUB_DISABLE_XET: "1"
     ports:
       - "8000:8000"
     volumes:
       - uploads:/app/uploads
+      - hf_cache:/root/.cache/huggingface
 
   # Worker Celery : exécute l'analyse IA et l'OCR en tâche de fond.
   # Partage le volume uploads/ pour que l'OCR accède aux fichiers téléversés.
@@ -103,8 +112,10 @@ services:
       GROQ_AGENT_MODEL: ${GROQ_AGENT_MODEL:-openai/gpt-oss-120b}
       REDIS_URL: redis://redis:6379/0
       UPLOAD_DIR: /app/uploads
+      HF_HUB_DISABLE_XET: "1"
     volumes:
       - uploads:/app/uploads
+      - hf_cache:/root/.cache/huggingface
     command: celery -A app.core.celery_app.celery_app worker --loglevel=info
 
   frontend:
@@ -123,3 +134,4 @@ services:
 volumes:
   pg_data:
   uploads:
+  hf_cache:
