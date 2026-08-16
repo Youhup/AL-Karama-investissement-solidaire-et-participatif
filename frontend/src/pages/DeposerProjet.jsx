@@ -3,9 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 import { createProject, listSectors } from '../api/projects';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import { useToast } from '../components/ui/ToastProvider';
+import Alert from '../components/ui/Alert';
+import Field from '../components/ui/Field';
+import SubmitButton from '../components/ui/SubmitButton';
 
 export default function DeposerProjet() {
   const navigate = useNavigate();
+  const toast = useToast();
 
   const [sectors, setSectors] = useState([]);
   const [sectorsError, setSectorsError] = useState('');
@@ -13,8 +19,16 @@ export default function DeposerProjet() {
     title: '', description: '', sector_id: '', amount_requested: '',
     funding_duration_days: 60, city: '', region: '', project_stage: 'idee',
   });
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const create = useAsyncAction(() => createProject({
+    title: form.title,
+    description: form.description,
+    sector_id: Number(form.sector_id),
+    amount_requested: Number(form.amount_requested),
+    funding_duration_days: Number(form.funding_duration_days),
+    city: form.city || undefined,
+    region: form.region || undefined,
+    project_stage: form.project_stage,
+  }));
 
   useEffect(() => {
     listSectors()
@@ -31,30 +45,16 @@ export default function DeposerProjet() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError('');
 
     if (!form.sector_id) {
-      setError('Merci de choisir un secteur.');
+      create.setError('Merci de choisir un secteur.');
       return;
     }
 
-    setSubmitting(true);
-    try {
-      const project = await createProject({
-        title: form.title,
-        description: form.description,
-        sector_id: Number(form.sector_id),
-        amount_requested: Number(form.amount_requested),
-        funding_duration_days: Number(form.funding_duration_days),
-        city: form.city || undefined,
-        region: form.region || undefined,
-        project_stage: form.project_stage,
-      });
-      navigate(`/mes-projets/${project.id}`);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
+    const res = await create.run();
+    if (res.ok) {
+      toast.success('Brouillon créé. Ajoutez maintenant vos documents.');
+      navigate(`/mes-projets/${res.data.id}`);
     }
   }
 
@@ -70,82 +70,59 @@ export default function DeposerProjet() {
         </p>
 
         <div className="form-panel">
-          {error && <div className="form-error">{error}</div>}
-          {sectorsError && <div className="form-error">{sectorsError}</div>}
+          <Alert variant="error">{create.error}</Alert>
+          <Alert variant="error">{sectorsError}</Alert>
 
           <form onSubmit={handleSubmit}>
-            <div className="field">
-              <label htmlFor="title">Titre du projet</label>
-              <input
-                id="title" required value={form.title}
-                placeholder="Ex. Coopérative Argane Ait Souala"
-                onChange={(e) => update('title', e.target.value)}
+            <Field
+              id="title" label="Titre du projet" required value={form.title}
+              placeholder="Ex. Coopérative Argane Ait Souala"
+              onChange={(e) => update('title', e.target.value)}
+            />
+
+            <Field
+              as="select" id="project_stage" label="Étape actuelle du projet" required
+              value={form.project_stage}
+              onChange={(e) => update('project_stage', e.target.value)}
+            >
+              <option value="idee">Idée</option>
+              <option value="demarrage">Démarrage</option>
+              <option value="croissance">En croissance</option>
+            </Field>
+
+            <Field
+              as="textarea" id="description" label="Description" required value={form.description}
+              placeholder="Présentez votre activité, votre expérience, et ce que le financement permettra de faire."
+              onChange={(e) => update('description', e.target.value)}
+            />
+
+            <Field
+              as="select" id="sector_id" label="Secteur" required value={form.sector_id}
+              onChange={(e) => update('sector_id', e.target.value)}
+            >
+              {sectors.length === 0 && <option value="">Chargement...</option>}
+              {sectors.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </Field>
+
+            <div className="field-row">
+              <Field
+                id="amount_requested" label="Montant demandé (MAD)" type="number" min="100" step="100"
+                required hint="Doit être un multiple de 100 MAD."
+                value={form.amount_requested}
+                onChange={(e) => update('amount_requested', e.target.value)}
+              />
+              <Field
+                id="funding_duration_days" label="Durée de collecte (jours)" type="number" min="7" step="1"
+                required value={form.funding_duration_days}
+                onChange={(e) => update('funding_duration_days', e.target.value)}
               />
             </div>
 
-            <div className="field">
-              <label htmlFor="project_stage">Étape actuelle du projet</label>
-              <select
-                id="project_stage" required value={form.project_stage}
-                onChange={(e) => update('project_stage', e.target.value)}
-              >
-                <option value="idee">Idée</option>
-                <option value="demarrage">Démarrage</option>
-                <option value="croissance">En croissance</option>
-              </select>
-            </div>
-
-            <div className="field">
-              <label htmlFor="description">Description</label>
-              <textarea
-                id="description" required value={form.description}
-                placeholder="Présentez votre activité, votre expérience, et ce que le financement permettra de faire."
-                onChange={(e) => update('description', e.target.value)}
-              />
-            </div>
-
-            <div className="field">
-              <label htmlFor="sector_id">Secteur</label>
-              <select
-                id="sector_id" required value={form.sector_id}
-                onChange={(e) => update('sector_id', e.target.value)}
-              >
-                {sectors.length === 0 && <option value="">Chargement...</option>}
-                {sectors.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-
             <div className="field-row">
-              <div className="field">
-                <label htmlFor="amount_requested">Montant demandé (MAD)</label>
-                <input
-                  id="amount_requested" type="number" min="100" step="100" required
-                  value={form.amount_requested}
-                  onChange={(e) => update('amount_requested', e.target.value)}
-                />
-                <p className="field-hint">Doit être un multiple de 100 MAD.</p>
-              </div>
-              <div className="field">
-                <label htmlFor="funding_duration_days">Durée de collecte (jours)</label>
-                <input
-                  id="funding_duration_days" type="number" min="7" step="1" required
-                  value={form.funding_duration_days}
-                  onChange={(e) => update('funding_duration_days', e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="field-row">
-              <div className="field">
-                <label htmlFor="city">Ville</label>
-                <input id="city" value={form.city} onChange={(e) => update('city', e.target.value)} />
-              </div>
-              <div className="field">
-                <label htmlFor="region">Région</label>
-                <input id="region" value={form.region} onChange={(e) => update('region', e.target.value)} />
-              </div>
+              <Field id="city" label="Ville" value={form.city} onChange={(e) => update('city', e.target.value)} />
+              <Field id="region" label="Région" value={form.region} onChange={(e) => update('region', e.target.value)} />
             </div>
 
             <p className="field-hint">
@@ -153,9 +130,9 @@ export default function DeposerProjet() {
               vous pourrez le modifier et ajouter des documents avant de le finaliser.
             </p>
 
-            <button className="btn-primary btn-block" type="submit" disabled={submitting}>
-              {submitting ? 'Création...' : 'Créer le brouillon'}
-            </button>
+            <SubmitButton className="btn-primary btn-block" pending={create.pending} pendingLabel="Création...">
+              Créer le brouillon
+            </SubmitButton>
           </form>
         </div>
       </div>

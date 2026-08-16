@@ -15,6 +15,22 @@ export function extractDetail(errorBody, fallback) {
   return fallback;
 }
 
+const NETWORK_ERROR_MESSAGE =
+  'Impossible de contacter le serveur. Vérifiez votre connexion et réessayez.';
+
+/**
+ * fetch() rejette avec un TypeError opaque ("Failed to fetch") quand le
+ * serveur est éteint ou le réseau coupé — on le remplace par un message
+ * affichable tel quel dans les bannières d'erreur.
+ */
+async function safeFetch(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch {
+    throw new Error(NETWORK_ERROR_MESSAGE);
+  }
+}
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -32,7 +48,7 @@ export function setToken(token) {
 export async function apiFetch(path, { method = 'GET', body, headers = {} } = {}) {
   const token = getToken();
 
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await safeFetch(`${API_URL}${path}`, {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -63,7 +79,7 @@ export async function apiFetch(path, { method = 'GET', body, headers = {} } = {}
  */
 export async function apiUpload(path, formData) {
   const token = getToken();
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await safeFetch(`${API_URL}${path}`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: formData,
@@ -87,7 +103,7 @@ export async function apiUpload(path, formData) {
  */
 export async function apiDownload(path, filename) {
   const token = getToken();
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await safeFetch(`${API_URL}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
 
@@ -124,7 +140,7 @@ export async function loginRequest(email, password) {
   form.set('username', email);
   form.set('password', password);
 
-  const response = await fetch(`${API_URL}/auth/login`, {
+  const response = await safeFetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: form,
@@ -132,7 +148,7 @@ export async function loginRequest(email, password) {
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
-    throw new Error(errorBody.detail || 'Email ou mot de passe incorrect');
+    throw new Error(extractDetail(errorBody, 'Email ou mot de passe incorrect'));
   }
   return response.json(); // { access_token, token_type }
 }

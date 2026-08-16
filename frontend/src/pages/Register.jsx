@@ -1,6 +1,11 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import { useToast } from '../components/ui/ToastProvider';
+import Alert from '../components/ui/Alert';
+import Field from '../components/ui/Field';
+import SubmitButton from '../components/ui/SubmitButton';
 
 const ROLES = [
   {
@@ -18,12 +23,18 @@ const ROLES = [
 export default function Register() {
   const { register } = useAuth();
   const navigate = useNavigate();
+  const toast = useToast();
 
   const [form, setForm] = useState({
     full_name: '', email: '', phone: '', password: '', confirmPassword: '', role: 'investisseur',
   });
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const registerAction = useAsyncAction(() => register({
+    full_name: form.full_name,
+    email: form.email,
+    phone: form.phone || undefined,
+    password: form.password,
+    role: form.role,
+  }));
 
   function update(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -31,31 +42,20 @@ export default function Register() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError('');
 
     if (form.password !== form.confirmPassword) {
-      setError('Les mots de passe ne correspondent pas.');
+      registerAction.setError('Les mots de passe ne correspondent pas.');
       return;
     }
     if (form.password.length < 8) {
-      setError('Le mot de passe doit contenir au moins 8 caractères.');
+      registerAction.setError('Le mot de passe doit contenir au moins 8 caractères.');
       return;
     }
 
-    setSubmitting(true);
-    try {
-      const user = await register({
-        full_name: form.full_name,
-        email: form.email,
-        phone: form.phone || undefined,
-        password: form.password,
-        role: form.role,
-      });
-      navigate(user.role === 'porteur' ? '/mes-projets' : '/projets', { replace: true });
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
+    const res = await registerAction.run();
+    if (res.ok) {
+      toast.success('Compte créé, bienvenue !');
+      navigate(res.data.role === 'porteur' ? '/mes-projets' : '/projets', { replace: true });
     }
   }
 
@@ -65,7 +65,7 @@ export default function Register() {
         <h1>Créer un compte</h1>
         <p className="auth-subtitle">Rejoignez la communauté d'investissement solidaire.</p>
 
-        {error && <div className="form-error">{error}</div>}
+        <Alert variant="error">{registerAction.error}</Alert>
 
         <form onSubmit={handleSubmit}>
           <div className="role-select">
@@ -83,46 +83,32 @@ export default function Register() {
             ))}
           </div>
 
-          <div className="field">
-            <label htmlFor="full_name">Nom complet</label>
-            <input
-              id="full_name" required value={form.full_name}
-              onChange={(e) => update('full_name', e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="email">Adresse email</label>
-            <input
-              id="email" type="email" required autoComplete="email" value={form.email}
-              onChange={(e) => update('email', e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="phone">Téléphone (optionnel)</label>
-            <input
-              id="phone" type="tel" value={form.phone}
-              onChange={(e) => update('phone', e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="password">Mot de passe</label>
-            <input
-              id="password" type="password" required autoComplete="new-password" value={form.password}
-              onChange={(e) => update('password', e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="confirmPassword">Confirmer le mot de passe</label>
-            <input
-              id="confirmPassword" type="password" required autoComplete="new-password"
-              value={form.confirmPassword}
-              onChange={(e) => update('confirmPassword', e.target.value)}
-            />
-          </div>
+          <Field
+            id="full_name" label="Nom complet" required value={form.full_name}
+            onChange={(e) => update('full_name', e.target.value)}
+          />
+          <Field
+            id="email" label="Adresse email" type="email" required autoComplete="email"
+            value={form.email} onChange={(e) => update('email', e.target.value)}
+          />
+          <Field
+            id="phone" label="Téléphone (optionnel)" type="tel" value={form.phone}
+            onChange={(e) => update('phone', e.target.value)}
+          />
+          <Field
+            id="password" label="Mot de passe" type="password" required autoComplete="new-password"
+            hint="8 caractères minimum."
+            value={form.password} onChange={(e) => update('password', e.target.value)}
+          />
+          <Field
+            id="confirmPassword" label="Confirmer le mot de passe" type="password" required
+            autoComplete="new-password" value={form.confirmPassword}
+            onChange={(e) => update('confirmPassword', e.target.value)}
+          />
 
-          <button className="btn-primary btn-block" type="submit" disabled={submitting}>
-            {submitting ? 'Création...' : 'Créer mon compte'}
-          </button>
+          <SubmitButton className="btn-primary btn-block" pending={registerAction.pending} pendingLabel="Création...">
+            Créer mon compte
+          </SubmitButton>
         </form>
 
         <p className="auth-switch">

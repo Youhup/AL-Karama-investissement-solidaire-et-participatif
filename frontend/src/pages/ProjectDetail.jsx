@@ -12,6 +12,11 @@ import {
   BENEFICIARY_LABELS, LEGAL_STATUS_LABELS, PROJECT_STAGE_LABELS, REPAYMENT_FREQUENCY_LABELS,
 } from '../utils/labels';
 import { deadlineBadge } from '../utils/funding';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import Alert from '../components/ui/Alert';
+import Field from '../components/ui/Field';
+import Modal from '../components/ui/Modal';
+import SubmitButton from '../components/ui/SubmitButton';
 
 const INVESTABLE_STATUSES = ['valide', 'en_financement'];
 const PLATFORM_MIN_INVESTMENT = 100;
@@ -28,10 +33,12 @@ export default function ProjectDetail() {
   const [fundItems, setFundItems] = useState([]);
 
   const [amount, setAmount] = useState('');
-  const [investError, setInvestError] = useState('');
-  const [investing, setInvesting] = useState(false);
   const [investSuccess, setInvestSuccess] = useState(false);
   const [showConsentModal, setShowConsentModal] = useState(false);
+  const invest = useAsyncAction(async (value, shareContactConsent) => {
+    await investInProject(id, value, shareContactConsent);
+    await refresh();
+  });
 
   async function refresh() {
     const [p, sectors] = await Promise.all([getProject(id), listSectors()]);
@@ -56,33 +63,27 @@ export default function ProjectDetail() {
 
   function handleInvest(e) {
     e.preventDefault();
-    setInvestError('');
     setInvestSuccess(false);
 
     const value = Number(amount);
     if (!value || value < PLATFORM_MIN_INVESTMENT || value % PLATFORM_MIN_INVESTMENT !== 0) {
-      setInvestError(
+      invest.setError(
         `Le montant doit être un multiple de ${PLATFORM_MIN_INVESTMENT} MAD (minimum ${PLATFORM_MIN_INVESTMENT} MAD).`
       );
       return;
     }
 
+    invest.setError('');
     setShowConsentModal(true);
   }
 
   async function confirmInvest(shareContactConsent) {
     const value = Number(amount);
     setShowConsentModal(false);
-    setInvesting(true);
-    try {
-      await investInProject(id, value, shareContactConsent);
+    const res = await invest.run(value, shareContactConsent);
+    if (res.ok) {
       setAmount('');
       setInvestSuccess(true);
-      await refresh();
-    } catch (err) {
-      setInvestError(err.message);
-    } finally {
-      setInvesting(false);
     }
   }
 
@@ -286,23 +287,19 @@ export default function ProjectDetail() {
 
             {isInvestable && user && user.role === 'investisseur' && (
               <form onSubmit={handleInvest}>
-                {investError && <div className="form-error">{investError}</div>}
-                {investSuccess && <div className="success-banner">Investissement confirmé, merci !</div>}
-                <div className="field">
-                  <label htmlFor="amount">Montant à investir (MAD)</label>
-                  <input
-                    id="amount" type="number" min={PLATFORM_MIN_INVESTMENT} max={remaining}
-                    step={PLATFORM_MIN_INVESTMENT} required
-                    value={amount} onChange={(e) => setAmount(e.target.value)}
-                    placeholder={`Reste ${remaining.toLocaleString('fr-FR')} MAD à financer`}
-                  />
-                  <p className="field-hint">
-                    Montant minimum : {PLATFORM_MIN_INVESTMENT} MAD, par multiples de {PLATFORM_MIN_INVESTMENT}.
-                  </p>
-                </div>
-                <button className="btn-primary btn-block" type="submit" disabled={investing}>
-                  {investing ? 'Envoi...' : 'Investir'}
-                </button>
+                <Alert variant="error">{invest.error}</Alert>
+                {investSuccess && <Alert variant="success">Investissement confirmé, merci !</Alert>}
+                <Field
+                  id="amount" label="Montant à investir (MAD)" type="number"
+                  min={PLATFORM_MIN_INVESTMENT} max={remaining}
+                  step={PLATFORM_MIN_INVESTMENT} required
+                  value={amount} onChange={(e) => setAmount(e.target.value)}
+                  placeholder={`Reste ${remaining.toLocaleString('fr-FR')} MAD à financer`}
+                  hint={`Montant minimum : ${PLATFORM_MIN_INVESTMENT} MAD, par multiples de ${PLATFORM_MIN_INVESTMENT}.`}
+                />
+                <SubmitButton className="btn-primary btn-block" pending={invest.pending} pendingLabel="Envoi...">
+                  Investir
+                </SubmitButton>
               </form>
             )}
           </div>
@@ -310,36 +307,33 @@ export default function ProjectDetail() {
       </div>
 
       {showConsentModal && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal-card">
-            <h3>Partager vos coordonnées ?</h3>
-            <p>
-              Ce projet rembourse en nature (pas en argent). Pour vous livrer votre contrepartie, le
-              porteur a besoin de connaître votre nom, votre téléphone et votre ville — uniquement
-              une fois le remboursement démarré, et uniquement pour ce projet.
-            </p>
-            <div className="modal-warning">
-              Si vous refusez, le porteur n'aura aucun moyen de vous identifier ni de vous contacter :
-              vous ne recevrez pas votre contrepartie.
-            </div>
-            <div className="modal-actions">
-              <button className="btn-primary btn-block" onClick={() => confirmInvest(true)} disabled={investing}>
-                J'accepte de partager mes coordonnées
-              </button>
-              <button className="btn-secondary btn-block" onClick={() => confirmInvest(false)} disabled={investing}>
-                Je refuse (je n'aurai pas ma contrepartie)
-              </button>
-              <button
-                className="btn-secondary btn-block"
-                style={{ border: 'none' }}
-                onClick={() => setShowConsentModal(false)}
-                disabled={investing}
-              >
-                Annuler
-              </button>
-            </div>
+        <Modal title="Partager vos coordonnées ?" onClose={() => setShowConsentModal(false)}>
+          <p>
+            Ce projet rembourse en nature (pas en argent). Pour vous livrer votre contrepartie, le
+            porteur a besoin de connaître votre nom, votre téléphone et votre ville — uniquement
+            une fois le remboursement démarré, et uniquement pour ce projet.
+          </p>
+          <div className="modal-warning">
+            Si vous refusez, le porteur n'aura aucun moyen de vous identifier ni de vous contacter :
+            vous ne recevrez pas votre contrepartie.
           </div>
-        </div>
+          <div className="modal-actions">
+            <button className="btn-primary btn-block" onClick={() => confirmInvest(true)} disabled={invest.pending}>
+              J'accepte de partager mes coordonnées
+            </button>
+            <button className="btn-secondary btn-block" onClick={() => confirmInvest(false)} disabled={invest.pending}>
+              Je refuse (je n'aurai pas ma contrepartie)
+            </button>
+            <button
+              className="btn-secondary btn-block"
+              style={{ border: 'none' }}
+              onClick={() => setShowConsentModal(false)}
+              disabled={invest.pending}
+            >
+              Annuler
+            </button>
+          </div>
+        </Modal>
       )}
 
       <Footer />

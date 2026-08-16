@@ -12,6 +12,11 @@ import {
   DOCUMENT_TYPE_LABELS, VERDICT_LABELS, SEVERITY_LABELS, PROJECT_STAGE_LABELS,
   LEGAL_STATUS_LABELS, BENEFICIARY_LABELS, PROJECT_STATUS_LABELS, REPAYMENT_FREQUENCY_LABELS,
 } from '../utils/labels';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import Alert from '../components/ui/Alert';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
+import Field from '../components/ui/Field';
+import SubmitButton from '../components/ui/SubmitButton';
 
 export default function AdminProjectReview() {
   const { id } = useParams();
@@ -31,9 +36,9 @@ export default function AdminProjectReview() {
 
   const [decision, setDecision] = useState('valide');
   const [notes, setNotes] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+  const decisionAction = useAsyncAction(() => submitAdminDecision(id, decision, notes));
 
   useEffect(() => {
     async function load() {
@@ -71,19 +76,23 @@ export default function AdminProjectReview() {
     }
   }
 
-  async function handleDecision(e) {
-    e.preventDefault();
-    setSubmitError('');
-    setSubmitting(true);
-    try {
-      await submitAdminDecision(id, decision, notes);
+  async function doSubmitDecision() {
+    const res = await decisionAction.run();
+    setShowRejectConfirm(false);
+    if (res.ok) {
       setSubmitted(true);
       setTimeout(() => navigate('/admin'), 1200);
-    } catch (err) {
-      setSubmitError(err.message);
-    } finally {
-      setSubmitting(false);
     }
+  }
+
+  function handleDecision(e) {
+    e.preventDefault();
+    // Le rejet est irréversible pour le porteur : on demande confirmation.
+    if (decision === 'rejete') {
+      setShowRejectConfirm(true);
+      return;
+    }
+    doSubmitDecision();
   }
 
   if (loading) {
@@ -214,7 +223,7 @@ export default function AdminProjectReview() {
 
             <div className="upload-box">
               <h3 style={{ marginBottom: 14 }}>Documents fournis</h3>
-              {downloadError && <div className="form-error">{downloadError}</div>}
+              <Alert variant="error">{downloadError}</Alert>
               {documents.length === 0 ? (
                 <p className="field-hint" style={{ marginTop: 0 }}>Aucun document fourni.</p>
               ) : (
@@ -275,9 +284,9 @@ export default function AdminProjectReview() {
 
             <div className="submit-panel">
               <h3>Décision</h3>
-              {submitError && <div className="form-error">{submitError}</div>}
+              <Alert variant="error">{decisionAction.error}</Alert>
               {submitted ? (
-                <div className="success-banner">Décision enregistrée.</div>
+                <Alert variant="success">Décision enregistrée.</Alert>
               ) : project.status !== 'a_valider' ? (
                 <p className="field-hint" style={{ marginTop: 0 }}>
                   Ce dossier a déjà été traité — statut actuel :{' '}
@@ -300,23 +309,35 @@ export default function AdminProjectReview() {
                       Rejeter
                     </div>
                   </div>
-                  <div className="field">
-                    <label htmlFor="notes">Note (optionnel)</label>
-                    <textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-                  </div>
-                  <button
+                  <Field
+                    as="textarea" id="notes" label="Note (optionnel)"
+                    value={notes} onChange={(e) => setNotes(e.target.value)}
+                  />
+                  <SubmitButton
                     className={`btn-block ${decision === 'rejete' ? 'btn-danger' : 'btn-primary'}`}
-                    type="submit"
-                    disabled={submitting}
+                    pending={decisionAction.pending}
+                    pendingLabel="Envoi..."
                   >
-                    {submitting ? 'Envoi...' : decision === 'rejete' ? 'Confirmer le rejet' : 'Confirmer la validation'}
-                  </button>
+                    {decision === 'rejete' ? 'Confirmer le rejet' : 'Confirmer la validation'}
+                  </SubmitButton>
                 </form>
               )}
             </div>
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={showRejectConfirm}
+        danger
+        title="Rejeter ce dossier ?"
+        message="Le porteur sera notifié et le dossier ne pourra plus être soumis à nouveau."
+        confirmLabel="Confirmer le rejet"
+        pending={decisionAction.pending}
+        onConfirm={doSubmitDecision}
+        onCancel={() => setShowRejectConfirm(false)}
+      />
+
       <Footer />
     </>
   );

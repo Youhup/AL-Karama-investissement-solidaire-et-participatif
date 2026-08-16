@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import Alert from '../components/ui/Alert';
+import Field from '../components/ui/Field';
+import SubmitButton from '../components/ui/SubmitButton';
 
 export default function Login() {
   const { login } = useAuth();
@@ -9,21 +13,14 @@ export default function Login() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const auth = useAsyncAction(() => login(email, password));
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError('');
-    setSubmitting(true);
-    try {
-      const user = await login(email, password);
-      const redirectTo = location.state?.from?.pathname || defaultRouteForRole(user.role);
+    const res = await auth.run();
+    if (res.ok) {
+      const redirectTo = location.state?.from?.pathname || defaultRouteForRole(res.data.role);
       navigate(redirectTo, { replace: true });
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -33,26 +30,20 @@ export default function Login() {
         <h1>Connexion</h1>
         <p className="auth-subtitle">Accédez à votre espace porteur de projet ou investisseur.</p>
 
-        {error && <div className="form-error">{error}</div>}
+        <Alert variant="error">{auth.error}</Alert>
 
         <form onSubmit={handleSubmit}>
-          <div className="field">
-            <label htmlFor="email">Adresse email</label>
-            <input
-              id="email" type="email" required autoComplete="email"
-              value={email} onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="password">Mot de passe</label>
-            <input
-              id="password" type="password" required autoComplete="current-password"
-              value={password} onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          <button className="btn-primary btn-block" type="submit" disabled={submitting}>
-            {submitting ? 'Connexion...' : 'Se connecter'}
-          </button>
+          <Field
+            id="email" label="Adresse email" type="email" required autoComplete="email"
+            value={email} onChange={(e) => setEmail(e.target.value)}
+          />
+          <Field
+            id="password" label="Mot de passe" type="password" required autoComplete="current-password"
+            value={password} onChange={(e) => setPassword(e.target.value)}
+          />
+          <SubmitButton className="btn-primary btn-block" pending={auth.pending} pendingLabel="Connexion...">
+            Se connecter
+          </SubmitButton>
         </form>
 
         <p className="auth-switch">

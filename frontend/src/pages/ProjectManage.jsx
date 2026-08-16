@@ -13,6 +13,12 @@ import {
   BENEFICIARY_LABELS, DOCUMENT_TYPE_LABELS, INSTALLMENT_STATUS_LABELS, INVESTMENT_STATUS_LABELS,
   LEGAL_STATUS_LABELS, REPAYMENT_FREQUENCY_LABELS,
 } from '../utils/labels';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import { useToast } from '../components/ui/ToastProvider';
+import Alert from '../components/ui/Alert';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
+import Field from '../components/ui/Field';
+import SubmitButton from '../components/ui/SubmitButton';
 
 const DOC_TYPES = Object.keys(DOCUMENT_TYPE_LABELS);
 const LEGAL_STATUSES = Object.keys(LEGAL_STATUS_LABELS);
@@ -42,6 +48,7 @@ const emptyTier = {
 
 export default function ProjectManage() {
   const { id } = useParams();
+  const toast = useToast();
 
   const [project, setProject] = useState(null);
   const [documents, setDocuments] = useState([]);
@@ -52,25 +59,20 @@ export default function ProjectManage() {
 
   const [docType, setDocType] = useState(DOC_TYPES[0]);
   const [file, setFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
-
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
   const [submitted, setSubmitted] = useState(false);
+
+  // Dialogue de confirmation partagé par toutes les actions sensibles de la
+  // page : { title, message, confirmLabel, danger, successMessage, action }.
+  const [confirm, setConfirm] = useState(null);
+  const [confirmPending, setConfirmPending] = useState(false);
 
   // --- Section A/D/E/F : profil du dossier (statut juridique, impact,
   // confiance, présentation) — un seul formulaire, un seul PATCH.
   const [profile, setProfile] = useState(emptyProfile);
   const [profileInitialized, setProfileInitialized] = useState(false);
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [profileError, setProfileError] = useState('');
-  const [profileSaved, setProfileSaved] = useState(false);
 
   // --- Section B : utilisation des fonds ---
   const [newFundItem, setNewFundItem] = useState({ category: '', amount: '', description: '' });
-  const [fundItemError, setFundItemError] = useState('');
-  const [fundItemSubmitting, setFundItemSubmitting] = useState(false);
 
   // --- Investisseurs (qui a financé, coordonnées si consenties) ---
   const [investments, setInvestments] = useState([]);
@@ -82,8 +84,6 @@ export default function ProjectManage() {
   const [tiers, setTiers] = useState([{ ...emptyTier, tier_max_amount: '' }]);
   const [startDate, setStartDate] = useState('');
   const [tierAddError, setTierAddError] = useState('');
-  const [refundSubmitting, setRefundSubmitting] = useState(false);
-  const [refundCreateError, setRefundCreateError] = useState('');
   const [coverageWarnings, setCoverageWarnings] = useState([]);
   // Par palier, n'affiche par défaut que l'échéance courante (la prochaine
   // non livrée) plutôt que tout l'historique — trop volumineux dès que le
@@ -139,56 +139,53 @@ export default function ProjectManage() {
       .catch((err) => setInvestmentsError(err.message));
   }, [project?.status, id]);
 
+  const upload = useAsyncAction(async (formEl) => {
+    await uploadDocument(id, file, docType);
+    setFile(null);
+    formEl.reset();
+    await refresh();
+  });
+
+  const removeDoc = useAsyncAction(async (documentId) => {
+    await deleteDocument(documentId);
+    await refresh();
+  });
+
+  const submitDossier = useAsyncAction(async () => {
+    const updated = await submitProject(id);
+    setProject(updated);
+    setSubmitted(true);
+  });
+
   async function handleUpload(e) {
     e.preventDefault();
     if (!file) {
-      setUploadError('Choisissez un fichier.');
+      upload.setError('Choisissez un fichier.');
       return;
     }
-    setUploadError('');
-    setUploading(true);
-    try {
-      await uploadDocument(id, file, docType);
-      setFile(null);
-      e.target.reset();
-      await refresh();
-    } catch (err) {
-      setUploadError(err.message);
-    } finally {
-      setUploading(false);
-    }
+    const formEl = e.currentTarget;
+    const res = await upload.run(formEl);
+    if (res.ok) toast.success('Document ajouté.');
   }
 
-  async function handleDelete(documentId) {
-    try {
-      await deleteDocument(documentId);
-      await refresh();
-    } catch (err) {
-      setUploadError(err.message);
-    }
-  }
-
-  async function handleSubmitDossier() {
-    setSubmitError('');
-    setSubmitting(true);
-    try {
-      const updated = await submitProject(id);
-      setProject(updated);
-      setSubmitted(true);
-    } catch (err) {
-      setSubmitError(err.message);
-    } finally {
-      setSubmitting(false);
+  async function handleConfirm() {
+    if (!confirm) return;
+    setConfirmPending(true);
+    const res = await confirm.action();
+    setConfirmPending(false);
+    setConfirm(null);
+    if (res.ok) {
+      if (confirm.successMessage) toast.success(confirm.successMessage);
+    } else {
+      toast.error(res.message);
     }
   }
 
   function updateProfile(field, value) {
-    setProfileSaved(false);
     setProfile((p) => ({ ...p, [field]: value }));
   }
 
   function toggleBeneficiary(key) {
-    setProfileSaved(false);
     setProfile((p) => ({
       ...p,
       target_beneficiaries: p.target_beneficiaries.includes(key)
@@ -197,63 +194,52 @@ export default function ProjectManage() {
     }));
   }
 
+  const saveProfile = useAsyncAction(async () => {
+    const updated = await updateProject(id, {
+      legal_status: profile.legal_status || undefined,
+      legal_id_number: profile.legal_id_number || undefined,
+      activity_start_year: profile.activity_start_year ? Number(profile.activity_start_year) : undefined,
+      target_beneficiaries: profile.target_beneficiaries,
+      jobs_created: Number(profile.jobs_created) || 0,
+      jobs_maintained: Number(profile.jobs_maintained) || 0,
+      social_impact_description: profile.social_impact_description || undefined,
+      previous_funding: profile.previous_funding,
+      previous_funding_details: profile.previous_funding_details || undefined,
+      risk_factors: profile.risk_factors || undefined,
+      pitch_summary: profile.pitch_summary || undefined,
+      references_text: profile.references_text || undefined,
+    });
+    setProject(updated);
+  });
+
   async function handleSaveProfile() {
-    setProfileError('');
-    setProfileSaving(true);
-    try {
-      const updated = await updateProject(id, {
-        legal_status: profile.legal_status || undefined,
-        legal_id_number: profile.legal_id_number || undefined,
-        activity_start_year: profile.activity_start_year ? Number(profile.activity_start_year) : undefined,
-        target_beneficiaries: profile.target_beneficiaries,
-        jobs_created: Number(profile.jobs_created) || 0,
-        jobs_maintained: Number(profile.jobs_maintained) || 0,
-        social_impact_description: profile.social_impact_description || undefined,
-        previous_funding: profile.previous_funding,
-        previous_funding_details: profile.previous_funding_details || undefined,
-        risk_factors: profile.risk_factors || undefined,
-        pitch_summary: profile.pitch_summary || undefined,
-        references_text: profile.references_text || undefined,
-      });
-      setProject(updated);
-      setProfileSaved(true);
-    } catch (err) {
-      setProfileError(err.message);
-    } finally {
-      setProfileSaving(false);
-    }
+    const res = await saveProfile.run();
+    if (res.ok) toast.success('Informations enregistrées.');
   }
+
+  const addFundItem = useAsyncAction(async () => {
+    await createFundUsageItem(id, {
+      category: newFundItem.category,
+      amount: Number(newFundItem.amount),
+      description: newFundItem.description || undefined,
+    });
+    setNewFundItem({ category: '', amount: '', description: '' });
+    await refresh();
+  });
+
+  const removeFundItem = useAsyncAction(async (itemId) => {
+    await deleteFundUsageItem(itemId);
+    await refresh();
+  });
 
   async function handleAddFundItem(e) {
     e.preventDefault();
     if (!newFundItem.category || !newFundItem.amount) {
-      setFundItemError('Le poste et le montant sont requis.');
+      addFundItem.setError('Le poste et le montant sont requis.');
       return;
     }
-    setFundItemError('');
-    setFundItemSubmitting(true);
-    try {
-      await createFundUsageItem(id, {
-        category: newFundItem.category,
-        amount: Number(newFundItem.amount),
-        description: newFundItem.description || undefined,
-      });
-      setNewFundItem({ category: '', amount: '', description: '' });
-      await refresh();
-    } catch (err) {
-      setFundItemError(err.message);
-    } finally {
-      setFundItemSubmitting(false);
-    }
-  }
-
-  async function handleDeleteFundItem(itemId) {
-    try {
-      await deleteFundUsageItem(itemId);
-      await refresh();
-    } catch (err) {
-      setFundItemError(err.message);
-    }
+    const res = await addFundItem.run();
+    if (res.ok) toast.success('Poste ajouté.');
   }
 
   function updateTier(index, field, value) {
@@ -320,43 +306,42 @@ export default function ProjectManage() {
     );
   }
 
+  const createPlan = useAsyncAction(async () => {
+    const payload = {
+      start_date: startDate,
+      tiers: tiers.map((t, i) => ({
+        tier_min_amount: tierMinFor(i, tiers),
+        tier_max_amount: t.tier_max_amount === '' ? null : Number(t.tier_max_amount),
+        product_description: t.product_description,
+        unit: t.unit,
+        quantity_per_occurrence: Number(t.quantity_per_occurrence),
+        frequency: t.frequency,
+        installments_count: Number(t.installments_count),
+        estimated_unit_value: t.estimated_unit_value === '' ? null : Number(t.estimated_unit_value),
+      })),
+    };
+    const created = await createRefundPlan(id, payload);
+    setRefundPlan(created);
+    setCoverageWarnings(created.coverage_warnings || []);
+  });
+
+  const deliver = useAsyncAction(async (installmentId) => {
+    await deliverInstallment(installmentId);
+    const [updatedPlan, updatedProject] = await Promise.all([getRefundPlan(id), getProject(id)]);
+    setRefundPlan(updatedPlan);
+    setProject(updatedProject);
+  });
+
   async function handleCreateRefundPlan(e) {
     e.preventDefault();
-    setRefundCreateError('');
-    setRefundSubmitting(true);
-    try {
-      const payload = {
-        start_date: startDate,
-        tiers: tiers.map((t, i) => ({
-          tier_min_amount: tierMinFor(i, tiers),
-          tier_max_amount: t.tier_max_amount === '' ? null : Number(t.tier_max_amount),
-          product_description: t.product_description,
-          unit: t.unit,
-          quantity_per_occurrence: Number(t.quantity_per_occurrence),
-          frequency: t.frequency,
-          installments_count: Number(t.installments_count),
-          estimated_unit_value: t.estimated_unit_value === '' ? null : Number(t.estimated_unit_value),
-        })),
-      };
-      const created = await createRefundPlan(id, payload);
-      setRefundPlan(created);
-      setCoverageWarnings(created.coverage_warnings || []);
-    } catch (err) {
-      setRefundCreateError(err.message);
-    } finally {
-      setRefundSubmitting(false);
-    }
+    const res = await createPlan.run();
+    if (res.ok) toast.success('Plan de remboursement créé.');
   }
 
   async function handleDeliver(installmentId) {
-    try {
-      await deliverInstallment(installmentId);
-      const [updatedPlan, updatedProject] = await Promise.all([getRefundPlan(id), getProject(id)]);
-      setRefundPlan(updatedPlan);
-      setProject(updatedProject);
-    } catch (err) {
-      setRefundCreateError(err.message);
-    }
+    const res = await deliver.run(installmentId);
+    if (res.ok) toast.success('Échéance marquée livrée.');
+    else toast.error(res.message);
   }
 
   if (loading) {
@@ -451,7 +436,17 @@ export default function ProjectManage() {
                         <span className="doc-type">{DOCUMENT_TYPE_LABELS[doc.doc_type]}</span>
                       </div>
                       {isDraft && (
-                        <button className="doc-remove" onClick={() => handleDelete(doc.id)}>
+                        <button
+                          className="doc-remove"
+                          onClick={() => setConfirm({
+                            title: 'Retirer ce document ?',
+                            message: doc.original_name,
+                            confirmLabel: 'Retirer',
+                            danger: true,
+                            successMessage: 'Document retiré.',
+                            action: () => removeDoc.run(doc.id),
+                          })}
+                        >
                           Retirer
                         </button>
                       )}
@@ -464,26 +459,23 @@ export default function ProjectManage() {
 
               {isDraft && (
                 <form onSubmit={handleUpload} style={{ marginTop: 18 }}>
-                  {uploadError && <div className="form-error">{uploadError}</div>}
+                  <Alert variant="error">{upload.error}</Alert>
                   <div className="upload-row">
-                    <div className="field">
-                      <label htmlFor="doc_type">Type de document</label>
-                      <select id="doc_type" value={docType} onChange={(e) => setDocType(e.target.value)}>
-                        {DOC_TYPES.map((t) => (
-                          <option key={t} value={t}>{DOCUMENT_TYPE_LABELS[t]}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label htmlFor="file">Fichier</label>
-                      <input
-                        id="file" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf"
-                        onChange={(e) => setFile(e.target.files[0])}
-                      />
-                    </div>
-                    <button className="btn-secondary" type="submit" disabled={uploading}>
-                      {uploading ? 'Envoi...' : 'Ajouter'}
-                    </button>
+                    <Field
+                      as="select" id="doc_type" label="Type de document"
+                      value={docType} onChange={(e) => setDocType(e.target.value)}
+                    >
+                      {DOC_TYPES.map((t) => (
+                        <option key={t} value={t}>{DOCUMENT_TYPE_LABELS[t]}</option>
+                      ))}
+                    </Field>
+                    <Field
+                      id="file" label="Fichier" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf"
+                      onChange={(e) => setFile(e.target.files[0])}
+                    />
+                    <SubmitButton className="btn-secondary" pending={upload.pending} pendingLabel="Envoi...">
+                      Ajouter
+                    </SubmitButton>
                   </div>
                   <p className="field-hint">Formats acceptés : JPG, PNG, WEBP, PDF — 10 Mo maximum.</p>
                 </form>
@@ -495,7 +487,7 @@ export default function ProjectManage() {
             {submitted ? (
               <>
                 <h3>Dossier soumis</h3>
-                <div className="success-banner">Dossier soumis avec succès, en cours d'analyse.</div>
+                <Alert variant="success">Dossier soumis avec succès, en cours d'analyse.</Alert>
               </>
             ) : isDraft ? (
               <>
@@ -505,23 +497,31 @@ export default function ProjectManage() {
                   validation par notre équipe. Vous ne pourrez plus modifier les documents.
                 </p>
                 {documents.length === 0 && (
-                  <div className="info-banner">
+                  <Alert variant="info">
                     Aucun document ajouté. Un dossier plus complet est analysé plus favorablement.
-                  </div>
+                  </Alert>
                 )}
                 {refundPlanChecked && !refundPlan && (
-                  <div className="info-banner">
+                  <Alert variant="info">
                     Définissez votre plan de remboursement en nature (onglet "Plan de remboursement")
                     avant de soumettre — il ne sera plus possible d'en ajouter un après la soumission.
-                  </div>
+                  </Alert>
                 )}
-                {submitError && <div className="form-error">{submitError}</div>}
-                <button
-                  className="btn-primary btn-block" onClick={handleSubmitDossier}
-                  disabled={submitting || !refundPlanChecked || !refundPlan}
+                <SubmitButton
+                  type="button" className="btn-primary btn-block"
+                  pending={submitDossier.pending} pendingLabel="Envoi..."
+                  disabled={!refundPlanChecked || !refundPlan}
+                  onClick={() => setConfirm({
+                    title: 'Soumettre le dossier pour analyse ?',
+                    message: 'Une fois soumis, le dossier est verrouillé : vous ne pourrez plus modifier '
+                      + 'les documents, la répartition des fonds ni le plan de remboursement.',
+                    confirmLabel: 'Soumettre',
+                    successMessage: 'Dossier soumis pour analyse.',
+                    action: () => submitDossier.run(),
+                  })}
                 >
-                  {submitting ? 'Envoi...' : 'Soumettre pour analyse'}
-                </button>
+                  Soumettre pour analyse
+                </SubmitButton>
               </>
             ) : (
               <>
@@ -556,7 +556,17 @@ export default function ProjectManage() {
                     <td>{item.description || '—'}</td>
                     {isDraft && (
                       <td>
-                        <button className="doc-remove" onClick={() => handleDeleteFundItem(item.id)}>
+                        <button
+                          className="doc-remove"
+                          onClick={() => setConfirm({
+                            title: 'Retirer ce poste de dépense ?',
+                            message: `${item.category} — ${Number(item.amount).toLocaleString('fr-FR')} MAD`,
+                            confirmLabel: 'Retirer',
+                            danger: true,
+                            successMessage: 'Poste retiré.',
+                            action: () => removeFundItem.run(item.id),
+                          })}
+                        >
                           Retirer
                         </button>
                       </td>
@@ -579,33 +589,26 @@ export default function ProjectManage() {
 
           {isDraft && (
             <form onSubmit={handleAddFundItem} style={{ marginTop: 18 }}>
-              {fundItemError && <div className="form-error">{fundItemError}</div>}
+              <Alert variant="error">{addFundItem.error}</Alert>
               <div className="field-row">
-                <div className="field">
-                  <label htmlFor="fund_category">Poste de dépense</label>
-                  <input
-                    id="fund_category" value={newFundItem.category}
-                    onChange={(e) => setNewFundItem((f) => ({ ...f, category: e.target.value }))}
-                  />
-                </div>
-                <div className="field">
-                  <label htmlFor="fund_amount">Montant (MAD)</label>
-                  <input
-                    id="fund_amount" type="number" min="0" step="1" value={newFundItem.amount}
-                    onChange={(e) => setNewFundItem((f) => ({ ...f, amount: e.target.value }))}
-                  />
-                </div>
-              </div>
-              <div className="field">
-                <label htmlFor="fund_description">Détail / justificatif (optionnel)</label>
-                <input
-                  id="fund_description" value={newFundItem.description}
-                  onChange={(e) => setNewFundItem((f) => ({ ...f, description: e.target.value }))}
+                <Field
+                  id="fund_category" label="Poste de dépense" value={newFundItem.category}
+                  onChange={(e) => setNewFundItem((f) => ({ ...f, category: e.target.value }))}
+                />
+                <Field
+                  id="fund_amount" label="Montant (MAD)" type="number" min="0" step="1"
+                  value={newFundItem.amount}
+                  onChange={(e) => setNewFundItem((f) => ({ ...f, amount: e.target.value }))}
                 />
               </div>
-              <button className="btn-secondary" type="submit" disabled={fundItemSubmitting}>
-                {fundItemSubmitting ? 'Ajout...' : '+ Ajouter un poste'}
-              </button>
+              <Field
+                id="fund_description" label="Détail / justificatif (optionnel)"
+                value={newFundItem.description}
+                onChange={(e) => setNewFundItem((f) => ({ ...f, description: e.target.value }))}
+              />
+              <SubmitButton className="btn-secondary" pending={addFundItem.pending} pendingLabel="Ajout...">
+                + Ajouter un poste
+              </SubmitButton>
             </form>
           )}
         </div>
@@ -619,33 +622,26 @@ export default function ProjectManage() {
           <h3 style={{ marginBottom: 18 }}>Informations complémentaires</h3>
 
           <div className="field-row">
-            <div className="field">
-              <label htmlFor="legal_status">Statut juridique</label>
-              <select
-                id="legal_status" value={profile.legal_status} disabled={!isDraft}
-                onChange={(e) => updateProfile('legal_status', e.target.value)}
-              >
-                <option value="">—</option>
-                {LEGAL_STATUSES.map((s) => (
-                  <option key={s} value={s}>{LEGAL_STATUS_LABELS[s]}</option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="legal_id_number">Numéro ICE / RC</label>
-              <input
-                id="legal_id_number" value={profile.legal_id_number} disabled={!isDraft}
-                onChange={(e) => updateProfile('legal_id_number', e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="activity_start_year">Année de début d'activité</label>
-              <input
-                id="activity_start_year" type="number" min="1900" value={profile.activity_start_year}
-                disabled={!isDraft}
-                onChange={(e) => updateProfile('activity_start_year', e.target.value)}
-              />
-            </div>
+            <Field
+              as="select" id="legal_status" label="Statut juridique"
+              value={profile.legal_status} disabled={!isDraft}
+              onChange={(e) => updateProfile('legal_status', e.target.value)}
+            >
+              <option value="">—</option>
+              {LEGAL_STATUSES.map((s) => (
+                <option key={s} value={s}>{LEGAL_STATUS_LABELS[s]}</option>
+              ))}
+            </Field>
+            <Field
+              id="legal_id_number" label="Numéro ICE / RC"
+              value={profile.legal_id_number} disabled={!isDraft}
+              onChange={(e) => updateProfile('legal_id_number', e.target.value)}
+            />
+            <Field
+              id="activity_start_year" label="Année de début d'activité" type="number" min="1900"
+              value={profile.activity_start_year} disabled={!isDraft}
+              onChange={(e) => updateProfile('activity_start_year', e.target.value)}
+            />
           </div>
 
           <div className="field">
@@ -664,29 +660,23 @@ export default function ProjectManage() {
           </div>
 
           <div className="field-row">
-            <div className="field">
-              <label htmlFor="jobs_created">Emplois créés</label>
-              <input
-                id="jobs_created" type="number" min="0" value={profile.jobs_created} disabled={!isDraft}
-                onChange={(e) => updateProfile('jobs_created', e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="jobs_maintained">Emplois maintenus</label>
-              <input
-                id="jobs_maintained" type="number" min="0" value={profile.jobs_maintained} disabled={!isDraft}
-                onChange={(e) => updateProfile('jobs_maintained', e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="field">
-            <label htmlFor="social_impact_description">Description de l'impact</label>
-            <textarea
-              id="social_impact_description" value={profile.social_impact_description} disabled={!isDraft}
-              onChange={(e) => updateProfile('social_impact_description', e.target.value)}
+            <Field
+              id="jobs_created" label="Emplois créés" type="number" min="0"
+              value={profile.jobs_created} disabled={!isDraft}
+              onChange={(e) => updateProfile('jobs_created', e.target.value)}
+            />
+            <Field
+              id="jobs_maintained" label="Emplois maintenus" type="number" min="0"
+              value={profile.jobs_maintained} disabled={!isDraft}
+              onChange={(e) => updateProfile('jobs_maintained', e.target.value)}
             />
           </div>
+
+          <Field
+            as="textarea" id="social_impact_description" label="Description de l'impact"
+            value={profile.social_impact_description} disabled={!isDraft}
+            onChange={(e) => updateProfile('social_impact_description', e.target.value)}
+          />
 
           <div className="field">
             <label>Financement(s) antérieur(s) ?</label>
@@ -707,47 +697,42 @@ export default function ProjectManage() {
           </div>
 
           {profile.previous_funding && (
-            <div className="field">
-              <label htmlFor="previous_funding_details">Détails (montant, source, remboursé ?)</label>
-              <textarea
-                id="previous_funding_details" value={profile.previous_funding_details} disabled={!isDraft}
-                onChange={(e) => updateProfile('previous_funding_details', e.target.value)}
-              />
-            </div>
+            <Field
+              as="textarea" id="previous_funding_details" label="Détails (montant, source, remboursé ?)"
+              value={profile.previous_funding_details} disabled={!isDraft}
+              onChange={(e) => updateProfile('previous_funding_details', e.target.value)}
+            />
           )}
 
-          <div className="field">
-            <label htmlFor="risk_factors">Facteurs de risque identifiés</label>
-            <textarea
-              id="risk_factors" value={profile.risk_factors} disabled={!isDraft}
-              onChange={(e) => updateProfile('risk_factors', e.target.value)}
-            />
-          </div>
+          <Field
+            as="textarea" id="risk_factors" label="Facteurs de risque identifiés"
+            value={profile.risk_factors} disabled={!isDraft}
+            onChange={(e) => updateProfile('risk_factors', e.target.value)}
+          />
 
-          <div className="field">
-            <label htmlFor="pitch_summary">Résumé en une phrase</label>
-            <input
-              id="pitch_summary" maxLength={140} value={profile.pitch_summary} disabled={!isDraft}
-              onChange={(e) => updateProfile('pitch_summary', e.target.value)}
-            />
-            <p className="field-hint">{profile.pitch_summary.length} / 140</p>
-          </div>
+          <Field
+            id="pitch_summary" label="Résumé en une phrase" maxLength={140}
+            value={profile.pitch_summary} disabled={!isDraft}
+            hint={`${profile.pitch_summary.length} / 140`}
+            onChange={(e) => updateProfile('pitch_summary', e.target.value)}
+          />
 
-          <div className="field">
-            <label htmlFor="references_text">Références (clients, partenaires...)</label>
-            <textarea
-              id="references_text" value={profile.references_text} disabled={!isDraft}
-              onChange={(e) => updateProfile('references_text', e.target.value)}
-            />
-          </div>
+          <Field
+            as="textarea" id="references_text" label="Références (clients, partenaires...)"
+            value={profile.references_text} disabled={!isDraft}
+            onChange={(e) => updateProfile('references_text', e.target.value)}
+          />
 
           {isDraft && (
             <>
-              {profileError && <div className="form-error">{profileError}</div>}
-              {profileSaved && <div className="success-banner">Informations enregistrées.</div>}
-              <button className="btn-secondary" onClick={handleSaveProfile} disabled={profileSaving}>
-                {profileSaving ? 'Enregistrement...' : 'Enregistrer les informations complémentaires'}
-              </button>
+              <Alert variant="error">{saveProfile.error}</Alert>
+              <SubmitButton
+                type="button" className="btn-secondary"
+                pending={saveProfile.pending} pendingLabel="Enregistrement..."
+                onClick={handleSaveProfile}
+              >
+                Enregistrer les informations complémentaires
+              </SubmitButton>
             </>
           )}
         </div>
@@ -765,7 +750,7 @@ export default function ProjectManage() {
                 : "Les coordonnées ne sont révélées qu'une fois le projet passé en remboursement."}
             </p>
 
-            {investmentsError && <div className="form-error">{investmentsError}</div>}
+            <Alert variant="error">{investmentsError}</Alert>
 
             {investments.length > 0 ? (
               <table className="allocation-table">
@@ -869,7 +854,11 @@ export default function ProjectManage() {
                               <td>{INSTALLMENT_STATUS_LABELS[installment.status]}</td>
                               <td>
                                 {installment.status !== 'livre' && financed && (
-                                  <button className="doc-remove" onClick={() => handleDeliver(installment.id)}>
+                                  <button
+                                    className="doc-remove"
+                                    disabled={deliver.pending}
+                                    onClick={() => handleDeliver(installment.id)}
+                                  >
                                     Marquer livré
                                   </button>
                                 )}
@@ -898,13 +887,10 @@ export default function ProjectManage() {
                   démarre automatiquement au lendemain du plafond du précédent.
                 </p>
 
-                <div className="field">
-                  <label htmlFor="start_date">Date de départ</label>
-                  <input
-                    id="start_date" type="date" required value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                  />
-                </div>
+                <Field
+                  id="start_date" label="Date de départ" type="date" required value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                />
 
                 {tiers.map((tier, index) => {
                   const min = tierMinFor(index, tiers);
@@ -923,82 +909,63 @@ export default function ProjectManage() {
                           <label>Min investi (MAD)</label>
                           <input className="mono" value={min ?? ''} disabled readOnly />
                         </div>
-                        <div className="field">
-                          <label htmlFor={`tier_max_${index}`}>Max investi (MAD)</label>
-                          <input
-                            id={`tier_max_${index}`} type="number" min={min || 0}
-                            placeholder="∞ (dernier palier)" value={tier.tier_max_amount}
-                            onChange={(e) => updateTier(index, 'tier_max_amount', e.target.value)}
-                          />
-                        </div>
-                        <div className="field">
-                          <label htmlFor={`tier_freq_${index}`}>Fréquence</label>
-                          <select
-                            id={`tier_freq_${index}`} value={tier.frequency}
-                            onChange={(e) => updateTier(index, 'frequency', e.target.value)}
-                          >
-                            {FREQUENCIES.map((f) => (
-                              <option key={f} value={f}>{REPAYMENT_FREQUENCY_LABELS[f]}</option>
-                            ))}
-                          </select>
-                        </div>
+                        <Field
+                          id={`tier_max_${index}`} label="Max investi (MAD)" type="number" min={min || 0}
+                          placeholder="∞ (dernier palier)" value={tier.tier_max_amount}
+                          onChange={(e) => updateTier(index, 'tier_max_amount', e.target.value)}
+                        />
+                        <Field
+                          as="select" id={`tier_freq_${index}`} label="Fréquence" value={tier.frequency}
+                          onChange={(e) => updateTier(index, 'frequency', e.target.value)}
+                        >
+                          {FREQUENCIES.map((f) => (
+                            <option key={f} value={f}>{REPAYMENT_FREQUENCY_LABELS[f]}</option>
+                          ))}
+                        </Field>
                       </div>
                       <div className="field-row">
-                        <div className="field">
-                          <label htmlFor={`tier_product_${index}`}>Nature du bien</label>
-                          <input
-                            id={`tier_product_${index}`} required value={tier.product_description}
-                            onChange={(e) => updateTier(index, 'product_description', e.target.value)}
-                          />
-                        </div>
-                        <div className="field">
-                          <label htmlFor={`tier_unit_${index}`}>Unité</label>
-                          <input
-                            id={`tier_unit_${index}`} required value={tier.unit}
-                            onChange={(e) => updateTier(index, 'unit', e.target.value)}
-                          />
-                        </div>
-                        <div className="field">
-                          <label htmlFor={`tier_qty_${index}`}>Quantité / échéance</label>
-                          <input
-                            id={`tier_qty_${index}`} type="number" min="0" step="0.01" required
-                            value={tier.quantity_per_occurrence}
-                            onChange={(e) => updateTier(index, 'quantity_per_occurrence', e.target.value)}
-                          />
-                        </div>
+                        <Field
+                          id={`tier_product_${index}`} label="Nature du bien" required
+                          value={tier.product_description}
+                          onChange={(e) => updateTier(index, 'product_description', e.target.value)}
+                        />
+                        <Field
+                          id={`tier_unit_${index}`} label="Unité" required value={tier.unit}
+                          onChange={(e) => updateTier(index, 'unit', e.target.value)}
+                        />
+                        <Field
+                          id={`tier_qty_${index}`} label="Quantité / échéance" type="number" min="0"
+                          step="0.01" required value={tier.quantity_per_occurrence}
+                          onChange={(e) => updateTier(index, 'quantity_per_occurrence', e.target.value)}
+                        />
                       </div>
                       <div className="field-row">
-                        <div className="field">
-                          <label htmlFor={`tier_count_${index}`}>Nombre d'échéances</label>
-                          <input
-                            id={`tier_count_${index}`} type="number" min="1" max="60" required
-                            value={tier.installments_count}
-                            onChange={(e) => updateTier(index, 'installments_count', e.target.value)}
-                          />
-                        </div>
-                        <div className="field">
-                          <label htmlFor={`tier_value_${index}`}>Valeur unitaire estimée (MAD)</label>
-                          <input
-                            id={`tier_value_${index}`} type="number" min="0" value={tier.estimated_unit_value}
-                            onChange={(e) => updateTier(index, 'estimated_unit_value', e.target.value)}
-                          />
-                          <p className="field-hint">Facultatif — sert uniquement à un avertissement de couverture.</p>
-                        </div>
+                        <Field
+                          id={`tier_count_${index}`} label="Nombre d'échéances" type="number" min="1"
+                          max="60" required value={tier.installments_count}
+                          onChange={(e) => updateTier(index, 'installments_count', e.target.value)}
+                        />
+                        <Field
+                          id={`tier_value_${index}`} label="Valeur unitaire estimée (MAD)" type="number"
+                          min="0" value={tier.estimated_unit_value}
+                          hint="Facultatif — sert uniquement à un avertissement de couverture."
+                          onChange={(e) => updateTier(index, 'estimated_unit_value', e.target.value)}
+                        />
                       </div>
                     </div>
                   );
                 })}
 
-                {tierAddError && <div className="form-error">{tierAddError}</div>}
+                <Alert variant="error">{tierAddError}</Alert>
                 <button type="button" className="btn-secondary" onClick={addTierRow} style={{ marginBottom: 18 }}>
                   + Ajouter un palier
                 </button>
 
-                {refundCreateError && <div className="form-error">{refundCreateError}</div>}
+                <Alert variant="error">{createPlan.error}</Alert>
 
-                <button className="btn-primary btn-block" type="submit" disabled={refundSubmitting}>
-                  {refundSubmitting ? 'Création...' : 'Créer le plan de remboursement'}
-                </button>
+                <SubmitButton className="btn-primary btn-block" pending={createPlan.pending} pendingLabel="Création...">
+                  Créer le plan de remboursement
+                </SubmitButton>
               </form>
             ) : (
               <p className="field-hint" style={{ marginTop: 0 }}>
@@ -1012,6 +979,18 @@ export default function ProjectManage() {
         </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!confirm}
+        danger={!!confirm?.danger}
+        title={confirm?.title}
+        message={confirm?.message}
+        confirmLabel={confirm?.confirmLabel}
+        pending={confirmPending}
+        onConfirm={handleConfirm}
+        onCancel={() => setConfirm(null)}
+      />
+
       <Footer />
     </>
   );

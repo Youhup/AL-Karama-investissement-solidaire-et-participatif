@@ -7,6 +7,7 @@
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { createRoot } from 'react-dom/client';
 import { AuthProvider } from '../src/context/AuthContext';
+import { ToastProvider } from '../src/components/ui/ToastProvider';
 import Login from '../src/pages/Login';
 import DeposerProjet from '../src/pages/DeposerProjet';
 import ProjectDetail from '../src/pages/ProjectDetail';
@@ -40,7 +41,7 @@ async function testLogin() {
   ]);
 
   const root = render(
-    <MemoryRouter><AuthProvider><Login /></AuthProvider></MemoryRouter>
+    <MemoryRouter><AuthProvider><ToastProvider><Login /></ToastProvider></AuthProvider></MemoryRouter>
   );
   await sleep(150);
 
@@ -74,7 +75,7 @@ async function testDeposerProjet() {
   ]);
 
   const root = render(
-    <MemoryRouter><AuthProvider><DeposerProjet /></AuthProvider></MemoryRouter>
+    <MemoryRouter><AuthProvider><ToastProvider><DeposerProjet /></ToastProvider></AuthProvider></MemoryRouter>
   );
   await sleep(250);
 
@@ -124,7 +125,9 @@ async function testInvestissement() {
   const root = render(
     <MemoryRouter initialEntries={['/projets/p-safran']}>
       <AuthProvider>
-        <Routes><Route path="/projets/:id" element={<ProjectDetail />} /></Routes>
+        <ToastProvider>
+          <Routes><Route path="/projets/:id" element={<ProjectDetail />} /></Routes>
+        </ToastProvider>
       </AuthProvider>
     </MemoryRouter>
   );
@@ -174,7 +177,7 @@ async function testPortefeuille() {
   ]);
 
   const root = render(
-    <MemoryRouter><AuthProvider><MyPortfolio /></AuthProvider></MemoryRouter>
+    <MemoryRouter><AuthProvider><ToastProvider><MyPortfolio /></ToastProvider></AuthProvider></MemoryRouter>
   );
   await sleep(400);
 
@@ -224,7 +227,9 @@ async function testRevueAdmin() {
   const root = render(
     <MemoryRouter initialEntries={['/admin/projects/p-x']}>
       <AuthProvider>
-        <Routes><Route path="/admin/projects/:id" element={<AdminProjectReview />} /></Routes>
+        <ToastProvider>
+          <Routes><Route path="/admin/projects/:id" element={<AdminProjectReview />} /></Routes>
+        </ToastProvider>
       </AuthProvider>
     </MemoryRouter>
   );
@@ -238,6 +243,13 @@ async function testRevueAdmin() {
   click(findByText('.decision-option', 'Rejeter'));
   setValue(document.getElementById('notes'), 'Dossier incomplet.');
   submit('.submit-panel:last-child form');
+  await sleep(350);
+
+  // Le rejet est irréversible : une boîte de confirmation s'interpose
+  // désormais entre la soumission du formulaire et l'envoi de la décision.
+  check('confirmation demandée avant le rejet', !!document.querySelector('.modal-overlay'));
+  check('rien envoyé avant la confirmation', !window.fetch.find('/decision', 'POST'));
+  click('.modal-actions .btn-danger');
   await sleep(350);
 
   const body = JSON.parse(window.fetch.find('/decision', 'POST').options.body);
@@ -256,7 +268,7 @@ async function testChatWidget() {
   ]);
 
   const root = render(
-    <MemoryRouter><AuthProvider><ChatWidget /></AuthProvider></MemoryRouter>
+    <MemoryRouter><AuthProvider><ToastProvider><ChatWidget /></ToastProvider></AuthProvider></MemoryRouter>
   );
   await sleep(150);
 
