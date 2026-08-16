@@ -8,12 +8,12 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.dependencies import require_role
 from app.models.ai_report import AIAnalysisReport
-from app.models.enums import ProjectStatus, UserRole
+from app.models.enums import AnalysisVerdict, ProjectStatus, UserRole
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.ai_report import AIAnalysisReportOut
 from app.schemas.project import ProjectOut
-from app.services.knowledge_indexer import reindex_project_knowledge
+from app.services.knowledge_indexer import schedule_project_reindex
 from app.services.project_service import expire_funding_if_overdue, funding_deadline
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -120,9 +120,86 @@ def decide(
 
     # Le dossier peut entrer ou sortir de la visibilité publique (VALIDE vs
     # REJETE) : on réindexe pour le RAG du chat (cf. knowledge_indexer.py).
-    reindex_project_knowledge.delay(str(project.id))
+    schedule_project_reindex(project.id)
 
     return {"status": "ok", "new_status": project.status}
+
+
+# Concordance verdict IA <-> décision admin. a_examiner est neutre par
+# construction (l'IA demande explicitement l'arbitrage humain) : il ne
+# compte ni comme accord ni comme désaccord.
+_AGREEMENT_PAIRS = {
+    (AnalysisVerdict.RECOMMANDE, ProjectStatus.VALIDE),
+    (AnalysisVerdict.SUSPECT, ProjectStatus.REJETE),
+    (AnalysisVerdict.REJETE_SUGGERE, ProjectStatus.REJETE),
+}
+_DISAGREEMENT_PAIRS = {
+    (AnalysisVerdict.RECOMMANDE, ProjectStatus.REJETE),
+    (AnalysisVerdict.SUSPECT, ProjectStatus.VALIDE),
+    (AnalysisVerdict.REJETE_SUGGERE, ProjectStatus.VALIDE),
+}
+
+
+@router.get("/analysis-quality")
+def analysis_quality(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Mesure l'accord entre les verdicts de l'IA et les décisions finales
+    des admins — chaque rapport tranché est une donnée étiquetée gratuite.
+    Le taux de concordance et surtout la liste des désaccords récents
+    servent à recalibrer le barème de l'agent (cf. SYSTEM_PROMPT de
+    agentic_analysis/agent.py) : c'est la boucle de feedback qualité."""
+    rows = (
+        db.query(AIAnalysisReport, Project)
+        .join(Project, AIAnalysisReport.project_id == Project.id)
+        .filter(
+            AIAnalysisReport.admin_decision.isnot(None),
+            AIAnalysisReport.verdict.isnot(None),
+        )
+        .order_by(AIAnalysisReport.reviewed_at.desc())
+        .all()
+    )
+
+    agreements = disagreements = neutral = 0
+    matrix: dict[str, dict[str, int]] = {}
+    recent_disagreements = []
+    for report, project in rows:
+        pair = (report.verdict, report.admin_decision)
+        verdict_key = report.verdict.value
+        decision_key = report.admin_decision.value
+        matrix.setdefault(verdict_key, {}).setdefault(decision_key, 0)
+        matrix[verdict_key][decision_key] += 1
+
+        if pair in _AGREEMENT_PAIRS:
+            agreements += 1
+        elif pair in _DISAGREEMENT_PAIRS:
+            disagreements += 1
+            if len(recent_disagreements) < 10:
+                recent_disagreements.append(
+                    {
+                        "project_id": str(project.id),
+                        "project_title": project.title,
+                        "ai_verdict": verdict_key,
+                        "admin_decision": decision_key,
+                        "relevance_score": report.relevance_score,
+                        "fraud_risk_score": report.fraud_risk_score,
+                        "reviewed_at": report.reviewed_at,
+                    }
+                )
+        else:
+            neutral += 1
+
+    conclusive = agreements + disagreements
+    return {
+        "decided_reports": len(rows),
+        "agreements": agreements,
+        "disagreements": disagreements,
+        "neutral_a_examiner": neutral,
+        "agreement_rate_percent": round(agreements / conclusive * 100, 1) if conclusive else None,
+        "matrix": matrix,
+        "recent_disagreements": recent_disagreements,
+    }
 
 
 # TODO (même pattern que ci-dessus) :

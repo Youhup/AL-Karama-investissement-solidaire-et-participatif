@@ -100,8 +100,10 @@ if IS_SQLITE:
     # substitut. Sur un vrai PostgreSQL (TEST_DATABASE_URL), la vraie
     # recherche vectorielle s'exécute normalement.
     chat_service.retrieve = lambda *a, **kw: []
-# L'agent renvoie directement un verdict JSON (pas de tool call) pour le test
-agent_module.chat_completion = lambda messages, model, tools=None: FakeMsg(
+# L'agent renvoie directement un verdict JSON (pas de tool call) pour le test.
+# **kwargs absorbe les paramètres additionnels du vrai chat_completion
+# (temperature, response_format...) sans coupler le mock à leur liste exacte.
+agent_module.chat_completion = lambda messages, model, tools=None, **kwargs: FakeMsg(
     '{"relevance_score": 80, "fraud_risk_score": 15, "verdict": "recommande", '
     '"findings": [{"type": "ok", "severite": "faible", "description": "RAS"}]}'
 )
@@ -109,6 +111,14 @@ agent_module.chat_completion = lambda messages, model, tools=None: FakeMsg(
 # --- Exécuter la tâche Celery en synchrone (pas de worker/redis) ---
 from app.services.agentic_analysis.agent import trigger_project_analysis
 trigger_project_analysis.delay = lambda project_id: trigger_project_analysis(project_id)
+
+# La réindexation RAG est aussi une tâche Celery, déclenchée à chaque
+# création/modification/soumission de projet (cf. routers/projects.py).
+# Sans mock, chaque .delay tenterait de joindre le broker Redis. Le RAG
+# n'est pas l'objet de ce test (cf. neutralisation de retrieve ci-dessus) :
+# no-op.
+import app.services.knowledge_indexer as knowledge_indexer
+knowledge_indexer.reindex_project_knowledge.delay = lambda project_id: None
 
 # --- DB de test partagée ---
 from sqlalchemy import create_engine
@@ -182,6 +192,10 @@ check('register investisseur -> 201', r.status_code == 201)
 # UserCreate.role est un Literal restreint à porteur/investisseur).
 r = client.post('/auth/register', json={'email': 'wannabe-admin@t.com', 'password': 'password123', 'full_name': 'X', 'role': 'admin'})
 check('auto-inscription admin refusée -> 422', r.status_code == 422)
+# Le minimum de 8 caractères doit être appliqué côté API, pas seulement
+# dans le formulaire du front (cf. UserCreate.password).
+r = client.post('/auth/register', json={'email': 'weak@t.com', 'password': 'court', 'full_name': 'X', 'role': 'porteur'})
+check('mot de passe trop court refusé -> 422', r.status_code == 422)
 # admin : créé en base directement (pas d'auto-inscription admin en prod)
 from app.models.user import User
 from app.core.security import hash_password
@@ -254,6 +268,15 @@ check('admin valide projet -> 200', r.status_code == 200)
 r = client.get(f'/projects/{pid}')
 check('projet passé en valide', r.json()['status'] == 'valide')
 
+# Boucle de feedback qualité : verdict IA "recommande" (mock) + décision
+# admin "valide" = 1 accord, concordance 100 %.
+r = client.get('/admin/analysis-quality', headers=H(admin_tok))
+check('stats qualité IA -> 200', r.status_code == 200)
+check('concordance 100% (recommande -> valide)',
+      r.json().get('agreements') == 1 and r.json().get('agreement_rate_percent') == 100.0)
+r = client.get('/admin/analysis-quality', headers=H(porteur_tok))
+check('porteur bloqué sur stats qualité -> 403', r.status_code == 403)
+
 print('\n=== 5. Investissement (avec verrouillage) ===')
 # projet visible dans la liste publique désormais
 r = client.get('/projects')
@@ -306,6 +329,19 @@ check('conversation anonyme -> 200', r.status_code == 200)
 cid = r.json()['conversation_id']
 r = client.post(f'/chat/conversations/{cid}/messages', json={'content': "C'est quoi l'ESS ?"})
 check('message chat -> 200 (stream)', r.status_code == 200 and "Réponse simulée" in r.text)
+r = client.post(f'/chat/conversations/{uuid.uuid4()}/messages', json={'content': 'x'})
+check('conversation inconnue -> 404', r.status_code == 404)
+# Le rôle de contexte vient du token, jamais du paramètre client : un
+# anonyme qui réclame ?context_role=admin doit rester "visiteur" (sinon
+# accès RAG étendu aux dossiers non publics, cf. retrieval_service).
+r = client.post('/chat/conversations?context_role=admin')
+check('conversation anonyme role=admin -> 200', r.status_code == 200)
+from app.models.chat import ChatConversation
+from app.models.enums import ChatRole
+_s = TestSession()
+_conv = _s.get(ChatConversation, uuid.UUID(r.json()['conversation_id']))
+check('context_role clampé à visiteur pour un anonyme', _conv.context_role == ChatRole.VISITEUR)
+_s.close()
 
 print('\n' + '='*40)
 if failures:

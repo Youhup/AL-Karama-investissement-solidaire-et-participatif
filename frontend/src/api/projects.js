@@ -84,3 +84,7 @@ export function submitAdminDecision(projectId, decision, notes) {
     body: { decision, notes: notes || undefined },
   });
 }
+
+export function getAnalysisQuality() {
+  return apiFetch('/admin/analysis-quality');
+}

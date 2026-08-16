@@ -55,6 +55,13 @@ cd backend
 python e2e_test.py            # parcours métier complet
 python refund_split_test.py   # répartition du remboursement entre plusieurs
                                # investisseurs situés dans des paliers différents
+python agent_tools_test.py    # vérifications déterministes de l'agent d'analyse
+                               # IA (budget, plan de remboursement, doublons,
+                               # benchmark, documents, numéro légal), sans LLM
+python golden_set_eval.py     # golden set : juge la qualité des verdicts IA sur
+                               # des dossiers fictifs calibrés (VRAIS appels Groq,
+                               # GROQ_API_KEY requis) — harnais anti-dérive à
+                               # relancer après tout changement de prompt/modèle
 
 # Backend sur un vrai PostgreSQL (recommandé avant mise en production)
 TEST_DATABASE_URL=postgresql://user:pass@localhost/db python e2e_test.py
