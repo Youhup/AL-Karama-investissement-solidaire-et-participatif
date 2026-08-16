@@ -18,4 +18,11 @@ class Document(Base):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     original_name: Mapped[str | None] = mapped_column(String(255))
     extracted_text: Mapped[str | None] = mapped_column(Text)
+    # SHA-256 du contenu du fichier, calculé à l'upload (cf. routers/
+    # documents.py). Sert à détecter la réutilisation d'un même fichier
+    # (CIN, photo, devis...) entre dossiers et entre comptes — signal de
+    # fraude fort, cf. agentic_analysis/tools.py. Nullable : les documents
+    # antérieurs à cette colonne sont backfillés paresseusement par
+    # l'analyse (le conteneur de migration n'a pas accès au volume uploads).
+    file_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,4 +1,5 @@
-import shutil
+import hashlib
+import logging
 import uuid
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from app.schemas.document import DocumentOut
 from app.services.ocr_service import run_document_ocr
 
 router = APIRouter(tags=["Documents"])
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
 MAX_FILE_SIZE_MB = 10
@@ -63,8 +66,15 @@ def upload_document(
     stored_filename = f"{uuid.uuid4()}{suffix}"
     file_path = project_dir / stored_filename
 
+    # Copie manuelle par blocs (plutôt que shutil.copyfileobj) pour calculer
+    # le SHA-256 au fil de l'écriture : le hash sert à détecter un même
+    # fichier réutilisé dans un autre dossier/compte (signal de fraude,
+    # cf. agentic_analysis/tools.py::check_duplicate_applications).
+    hasher = hashlib.sha256()
     with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        while chunk := file.file.read(1024 * 1024):
+            hasher.update(chunk)
+            buffer.write(chunk)
 
     if file_path.stat().st_size > MAX_FILE_SIZE_MB * 1024 * 1024:
         file_path.unlink()
@@ -75,14 +85,20 @@ def upload_document(
         doc_type=doc_type,
         file_path=str(file_path),
         original_name=file.filename,
+        file_hash=hasher.hexdigest(),
     )
     db.add(document)
     db.commit()
     db.refresh(document)
 
     # OCR en tâche de fond : le texte extrait alimentera l'IA agentique
-    # au moment de la soumission du dossier.
-    run_document_ocr.delay(str(document.id))
+    # au moment de la soumission du dossier. Best-effort : un broker Celery
+    # injoignable ne doit pas faire échouer un upload déjà enregistré
+    # (le document restera simplement sans texte extrait).
+    try:
+        run_document_ocr.delay(str(document.id))
+    except Exception:
+        logger.exception("Impossible de planifier l'OCR du document %s", document.id)
 
     return DocumentOut.from_model(document)
 
