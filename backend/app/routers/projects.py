@@ -22,7 +22,7 @@ from app.schemas.project import (
     ProjectUpdate,
 )
 from app.services.agentic_analysis.agent import trigger_project_analysis
-from app.services.knowledge_indexer import reindex_project_knowledge
+from app.services.knowledge_indexer import schedule_project_reindex
 from app.services.project_service import expire_funding_if_overdue, funding_deadline
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
@@ -75,7 +75,7 @@ def create_project(
     # Indexé dès la création pour que le porteur puisse en discuter avec le
     # chat même en brouillon (accès réservé au propriétaire, cf.
     # retrieval_service.py).
-    reindex_project_knowledge.delay(str(project.id))
+    schedule_project_reindex(project.id)
 
     return project
 
@@ -168,7 +168,7 @@ def update_project(
     db.commit()
     db.refresh(project)
 
-    reindex_project_knowledge.delay(str(project.id))
+    schedule_project_reindex(project.id)
 
     return project
 
@@ -202,9 +202,23 @@ def submit_project(
     db.commit()
     db.refresh(project)
 
-    # Lance l'analyse en tâche de fond (voir services/agentic_analysis/agent.py)
-    trigger_project_analysis.delay(str(project.id))
-    reindex_project_knowledge.delay(str(project.id))
+    # Lance l'analyse en tâche de fond (voir services/agentic_analysis/agent.py).
+    # Si le broker Celery est injoignable, on REVIENT en brouillon plutôt que
+    # de laisser un dossier « soumis » qu'aucune analyse ne traitera jamais
+    # (soumis n'est pas re-soumissible, et l'admin ne peut trancher qu'un
+    # dossier arrivé en a_valider) : le porteur peut simplement réessayer.
+    try:
+        trigger_project_analysis.delay(str(project.id))
+    except Exception:
+        project.status = ProjectStatus.BROUILLON
+        project.submitted_at = None
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Le service d'analyse est momentanément indisponible, "
+            "veuillez soumettre à nouveau dans quelques instants",
+        )
+    schedule_project_reindex(project.id)
 
     return project
 
@@ -241,7 +255,7 @@ def create_fund_usage_item(
     db.add(item)
     db.commit()
     db.refresh(item)
-    reindex_project_knowledge.delay(str(project_id))
+    schedule_project_reindex(project_id)
     return item
 
 
@@ -278,4 +292,4 @@ def delete_fund_usage_item(
 
     db.delete(item)
     db.commit()
-    reindex_project_knowledge.delay(str(project.id))
+    schedule_project_reindex(project.id)

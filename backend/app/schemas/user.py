@@ -1,14 +1,17 @@
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.models.enums import UserRole
 
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    # Le minimum de 8 caractères doit être appliqué ICI, côté API : le
+    # formulaire d'inscription du front le vérifie aussi (Register.jsx),
+    # mais rien n'empêche d'appeler /auth/register directement.
+    password: str = Field(min_length=8)
     full_name: str
     phone: str | None = None
     # ADMIN volontairement exclu : l'auto-inscription ne doit permettre que

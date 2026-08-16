@@ -12,7 +12,7 @@ from app.models.project import Project
 from app.models.refund import InvestmentRefundAllocation, RefundInstallment, RefundPlan, RefundTier
 from app.models.user import User
 from app.schemas.refund import AllocationOut, InstallmentOut, RefundPlanCreate, RefundPlanOut, RefundTierOut
-from app.services.knowledge_indexer import reindex_project_knowledge
+from app.services.knowledge_indexer import schedule_project_reindex
 from app.services.refund_service import (
     estimate_tier_coverage,
     generate_allocations,
@@ -314,4 +314,4 @@ def _maybe_close_project(db: Session, project_id: uuid.UUID) -> None:
         db.commit()
 
         # CLOS sort le projet de la visibilité publique : réindexation RAG.
-        reindex_project_knowledge.delay(str(project_id))
+        schedule_project_reindex(project_id)

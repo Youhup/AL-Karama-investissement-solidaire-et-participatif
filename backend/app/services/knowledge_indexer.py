@@ -279,6 +279,23 @@ def reindex_all(db: Session) -> None:
     index_reference_documents(db)
 
 
+def schedule_project_reindex(project_id) -> None:
+    """Planifie la réindexation RAG d'un projet, en best-effort : si le
+    broker Celery (Redis) est injoignable, on loggue et on continue. La
+    réindexation n'est jamais critique pour la requête utilisateur en cours
+    (le chat servira au pire un contenu légèrement périmé) — elle ne doit
+    donc jamais transformer une création/modification de projet réussie en
+    erreur 500. À utiliser partout à la place de
+    reindex_project_knowledge.delay(...) dans les routers."""
+    try:
+        reindex_project_knowledge.delay(str(project_id))
+    except Exception:
+        logger.exception(
+            "Impossible de planifier la réindexation RAG du projet %s "
+            "(broker Celery injoignable ?)", project_id
+        )
+
+
 @celery_app.task(name="reindex_project_knowledge")
 def reindex_project_knowledge(project_id: str) -> None:
     """Déclenché après toute création/modification d'un projet ou décision
